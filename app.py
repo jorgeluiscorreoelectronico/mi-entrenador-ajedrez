@@ -725,3 +725,4 @@ else:
             if st.button("⏭️", use_container_width=True) and paso < total:
                 st.session_state["paso"] = total
                 st.rerun()
+                
