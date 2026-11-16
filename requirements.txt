@@ -1,4 +1,5 @@
 streamlit
 chess
 requests
+edge-tts
 gTTS
