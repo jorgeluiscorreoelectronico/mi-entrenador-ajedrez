@@ -70,16 +70,18 @@ def generar_audio_humano(texto, voz_id):
     return buf.getvalue()
 
 # --- IA GRATUITA DE GOOGLE GEMINI (OPCIONAL) ---
-def explicar_con_gemini(api_key, fen, jugada_hecha, mejor_jugada, clasificacion):
+def explicar_con_gemini(api_key, fen, es_jugador, jugada_hecha, mejor_jugada, clasificacion):
     if not api_key:
         return None
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key.strip()}"
+        quien = "el alumno (Blancas)" if es_jugador else "el rival/robot (Negras)"
         prompt = (
-            f"Eres el entrenador de ajedrez de Chess.com hablando en español natural y cercano a un jugador novato. "
-            f"En la posición FEN '{fen}', el jugador hizo '{jugada_hecha}' (clasificada como {clasificacion}). "
-            f"La mejor jugada según Stockfish era '{mejor_jugada}'. "
-            f"Explícale en máximo 2 oraciones breves y muy claras por qué su jugada tuvo esa clasificación y qué lograba la mejor jugada. No uses notación en inglés."
+            f"Eres el entrenador de ajedrez de Chess.com hablando en español natural a tu alumno (que juega con Blancas). "
+            f"En la posición FEN '{fen}', {quien} hizo '{jugada_hecha}' ({clasificacion}). "
+            f"La mejor jugada era '{mejor_jugada}'. "
+            f"Si movió el alumno, explícale su jugada. Si movió el rival/robot, cuéntale al alumno qué hizo su rival y cómo responderle. "
+            f"Máximo 2 oraciones breves y sin notación en inglés."
         )
         r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=6)
         if r.status_code == 200:
@@ -153,13 +155,14 @@ def analizar_partida(pgn_texto):
     datos_jugadas = [{
         "fen": tablero.fen(),
         "fen_previo": tablero.fen(),
+        "es_jugador": True,
         "ultimo_mov": None,
         "mejor_mov": None,
         "jugada_txt": "",
         "mejor_txt": "",
         "titulo": "Inicio de la partida",
         "color_badge": "#81b64c",
-        "explicacion": "¡Hola! Soy tu entrenador con voz neuronal. Toca 'Sig. ➡️' abajo del tablero para repasar tu partida.",
+        "explicacion": "¡Hola! Tú llevas las Blancas y el Robot las Negras. Toca 'Sig. ➡️' para repasar la partida.",
         "eval_blancas": 0.2
     }]
     
@@ -167,6 +170,7 @@ def analizar_partida(pgn_texto):
         info_prev = motor.analyse(tablero, chess.engine.Limit(depth=12))
         
         for num, mov in enumerate(juego.mainline_moves()):
+            es_turno_jugador = (tablero.turn == chess.WHITE)
             fen_antes = tablero.fen()
             mejor_mov_prev = info_prev.get("pv", [mov])[0]
             score_antes = info_prev["score"].pov(tablero.turn).score(mate_score=10000) / 100.0
@@ -180,39 +184,65 @@ def analizar_partida(pgn_texto):
             eval_blancas = info_desp["score"].white().score(mate_score=10000) / 100.0
             perdida = max(0.0, score_antes - score_desp)
             
-            amenaza_rival = ""
+            respuesta_siguiente = ""
             if "pv" in info_desp and len(info_desp["pv"]) > 0:
-                mov_rival = info_desp["pv"][0]
-                amenaza_rival = jugada_en_espanol(tablero, mov_rival)
+                mov_sig = info_desp["pv"][0]
+                respuesta_siguiente = jugada_en_espanol(tablero, mov_sig)
 
-            if num < 6 and perdida < 0.35:
-                titulo, color = "📖 Jugada de Libro", "#a88865"
-                explicacion = f"Jugaste {texto_jugada_hecha}. Es una buena jugada de apertura para activar tus piezas."
-            elif mov == mejor_mov_prev:
-                if perdida == 0 and score_desp > score_antes + 1.5:
-                    titulo, color = "!! Jugada Brillante", "#1baca6"
-                    explicacion = f"¡Brillante! Encontraste {texto_jugada_hecha}, el golpe táctico más fuerte en el tablero."
+            # --- EXPLICACIÓN DIFERENCIADA: TÚ (BLANCAS) VS EL ROBOT (NEGRAS) ---
+            if es_turno_jugador:
+                if tablero.is_checkmate():
+                    titulo, color = "🏆 ¡Tu Jaque Mate!", "#1baca6"
+                    explicacion = f"¡Felicidades! Jugaste {texto_jugada_hecha} y ganaste la partida por jaque mate."
+                elif num < 6 and perdida < 0.35:
+                    titulo, color = "📖 Tu Jugada: Libro", "#a88865"
+                    explicacion = f"Jugaste {texto_jugada_hecha}. Muy buena jugada teórica de apertura para desarrollar tus piezas."
+                elif mov == mejor_mov_prev:
+                    if perdida == 0 and score_desp > score_antes + 1.5:
+                        titulo, color = "!! Tu Jugada: Brillante", "#1baca6"
+                        explicacion = f"¡Increíble! Encontraste {texto_jugada_hecha}, la jugada más fuerte para castigar a tu rival."
+                    else:
+                        titulo, color = "★ Tu Jugada: La Mejor", "#81b64c"
+                        explicacion = f"¡Muy bien! Hiciste {texto_jugada_hecha}, que era exactamente la mejor jugada disponible."
+                elif perdida < 0.35:
+                    titulo, color = "👍 Tu Jugada: Buena", "#96bc4b"
+                    explicacion = f"Jugaste {texto_jugada_hecha}, una buena decisión. Otra opción interesante era {texto_mejor_jugada}."
+                elif perdida < 0.9:
+                    titulo, color = "?! Tu Jugada: Imprecisión", "#f7c631"
+                    explicacion = f"Hiciste {texto_jugada_hecha}, pero es imprecisa porque permite al rival responder con {respuesta_siguiente}. Te convenía más {texto_mejor_jugada}."
+                elif perdida < 2.0:
+                    titulo, color = "? Tu Jugada: Error", "#e6912c"
+                    explicacion = f"Cuidado, jugar {texto_jugada_hecha} es un error porque tu oponente ahora tiene {respuesta_siguiente}. Debías jugar {texto_mejor_jugada}."
                 else:
-                    titulo, color = "★ Mejor Jugada", "#81b64c"
-                    explicacion = f"¡Excelente! Hiciste {texto_jugada_hecha}, que era exactamente la mejor jugada disponible."
-            elif perdida < 0.35:
-                titulo, color = "👍 Buena Jugada", "#96bc4b"
-                explicacion = f"Jugaste {texto_jugada_hecha}, manteniendo bien tu posición. También podías considerar {texto_mejor_jugada}."
-            elif perdida < 0.9:
-                titulo, color = "?! Imprecisión", "#f7c631"
-                explicacion = f"Hiciste {texto_jugada_hecha}, pero es una imprecisión porque deja que tu rival responda con {amenaza_rival}. Era mejor {texto_mejor_jugada}."
-            elif perdida < 2.0:
-                titulo, color = "? Error", "#e6912c"
-                explicacion = f"Cuidado, {texto_jugada_hecha} es un error porque tu oponente ahora tiene {amenaza_rival}. Te convenía jugar {texto_mejor_jugada}."
+                    titulo, color = "?? Tu Jugada: Error Grave", "#ca3431"
+                    explicacion = f"¡Peligro! Con {texto_jugada_hecha} pierdes mucha ventaja porque permites que el rival juegue {respuesta_siguiente}. Era necesario hacer {texto_mejor_jugada}."
+                
+                mejor_flecha = mejor_mov_prev if perdida >= 0.4 else None
+
             else:
-                titulo, color = "?? Error Grave", "#ca3431"
-                explicacion = f"¡Peligro! Con {texto_jugada_hecha} entregas material o ventaja, permitiendo que el rival juegue {amenaza_rival}. Debías hacer {texto_mejor_jugada}."
+                # Turno del Rival / Robot (Negras) -> El entrenador te dice cómo aprovechar lo que hizo tu enemigo
+                if tablero.is_checkmate():
+                    titulo, color = "🤖 Jaque Mate del Rival", "#ca3431"
+                    explicacion = f"El Robot jugó {texto_jugada_hecha} logrando dar jaque mate."
+                elif perdida < 0.5:
+                    titulo, color = "🤖 Jugada Sólida del Rival", "#5c8bb0"
+                    explicacion = f"Tu rival jugó {texto_jugada_hecha}. En tu siguiente turno, tu mejor plan es responder con {respuesta_siguiente}."
+                elif perdida < 1.8:
+                    titulo, color = "🤖 Imprecisión de tu Rival", "#f7c631"
+                    explicacion = f"El Robot dudó jugando {texto_jugada_hecha}. ¡Puedes aprovecharlo en tu turno jugando {respuesta_siguiente}!"
+                else:
+                    titulo, color = "🤖 ¡Regalo de tu Rival!", "#e6912c"
+                    explicacion = f"¡Tu rival cometió un grave error con {texto_jugada_hecha}! En la siguiente jugada podías castigarlo jugando {respuesta_siguiente}."
+                
+                # En el turno del rival, no mostramos qué debió hacer él para no confundirte
+                mejor_flecha = None
 
             datos_jugadas.append({
                 "fen": tablero.fen(),
                 "fen_previo": fen_antes,
+                "es_jugador": es_turno_jugador,
                 "ultimo_mov": mov,
-                "mejor_mov": mejor_mov_prev if perdida >= 0.4 else None,
+                "mejor_mov": mejor_flecha,
                 "jugada_txt": texto_jugada_hecha,
                 "mejor_txt": texto_mejor_jugada,
                 "titulo": titulo,
@@ -284,6 +314,7 @@ if modo.startswith("🎮"):
                 box-shadow: 0 4px 8px rgba(0,0,0,0.3);
             }}
             .coach-danger {{ border-left-color: #ca3431 !important; background: #3a2020 !important; }}
+            .coach-win {{ border-left-color: #1baca6 !important; background: #1c3533 !important; }}
             .avatar {{ font-size: 34px; }}
             .msg {{ font-size: 14px; line-height: 1.4; color: #f1f1f1; }}
             #myBoard {{ width: 100%; max-width: 400px; margin: 0 auto; touch-action: none; }}
@@ -351,10 +382,12 @@ if modo.startswith("🎮"):
             var sndCapture = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/capture.mp3');
             var sndCheck = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/move-check.mp3');
             var sndIllegal = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/illegal.mp3');
+            var sndGameEnd = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/game-end.mp3');
 
             function playSound(moveObj) {{
                 try {{
-                    if (game.in_check()) sndCheck.play();
+                    if (game.game_over()) sndGameEnd.play();
+                    else if (game.in_check()) sndCheck.play();
                     else if (moveObj && moveObj.captured) sndCapture.play();
                     else sndMove.play();
                 }} catch(e) {{}}
@@ -384,8 +417,29 @@ if modo.startswith("🎮"):
                 }}
             }}
 
+            function verificarFinDeJuego() {{
+                if (!game.game_over()) return false;
+                document.getElementById('btnCorregir').style.display = 'none';
+                document.getElementById('coachCard').classList.remove('coach-danger');
+                if (game.in_checkmate()) {{
+                    if (game.turn() === 'b') {{
+                        document.getElementById('coachCard').classList.add('coach-win');
+                        document.getElementById('statusMsg').innerHTML =
+                            "🏆 <b>¡JAQUE MATE! ¡Ganaste la partida!</b> 🎉<br>Toca el botón verde de abajo para repasar tu victoria con el Entrenador.";
+                    }} else {{
+                        document.getElementById('coachCard').classList.add('coach-danger');
+                        document.getElementById('statusMsg').innerHTML =
+                            "🏁 <b>¡Jaque Mate del Robot!</b><br>Toca el botón verde de abajo para que el Entrenador te explique cómo defenderte la próxima vez.";
+                    }}
+                }} else {{
+                    document.getElementById('statusMsg').innerHTML =
+                        "🤝 <b>¡Partida terminada en Tablas (Empate / Rey Ahogado)!</b><br>Toca el botón verde abajo para analizar la partida.";
+                }}
+                return true;
+            }}
+
             function verificarPeligroPieza() {{
-                if (!protector) return null;
+                if (!protector || game.game_over()) return null;
                 var respuestasRival = game.moves({{ verbose: true }});
                 var peorPerdida = 0;
                 var amenaza = null;
@@ -477,16 +531,16 @@ if modo.startswith("🎮"):
             }}
 
             function turnoBot() {{
-                if (game.game_over()) return;
+                if (verificarFinDeJuego()) return;
                 var m = elegirJugadaBot();
                 if (m) {{
                     var res = game.move(m);
                     board.position(game.fen());
                     playSound(res);
+                    if (verificarFinDeJuego()) return;
                     var texto = "Moví mi <b>" + nombrePieza(res.piece) + " a " + res.to + "</b>.";
                     if (res.captured) texto = "Capturé tu <b>" + nombrePieza(res.captured) + " en " + res.to + "</b>.";
-                    if (game.in_checkmate()) texto += " <b>¡Jaque mate!</b>";
-                    else if (game.in_check()) texto += " <b>¡Estás en jaque! Debes proteger a tu Rey.</b>";
+                    if (game.in_check()) texto += " <b>¡Estás en jaque! Debes proteger a tu Rey.</b>";
                     else texto += " ¡Te toca!";
                     document.getElementById('coachCard').classList.remove('coach-danger');
                     document.getElementById('statusMsg').innerHTML = texto;
@@ -499,6 +553,10 @@ if modo.startswith("🎮"):
                 board.position(game.fen());
                 playSound(move);
 
+                // 1. Verificar al instante si diste Jaque Mate o Tablas
+                if (verificarFinDeJuego()) return;
+
+                // 2. Verificar si regalaste la Dama o una pieza valiosa
                 var peligro = verificarPeligroPieza();
                 if (peligro) {{
                     try {{ sndIllegal.play(); }} catch(e) {{}}
@@ -587,7 +645,7 @@ if modo.startswith("🎮"):
 
             function deshacer() {{
                 document.getElementById('btnCorregir').style.display = 'none';
-                document.getElementById('coachCard').classList.remove('coach-danger');
+                document.getElementById('coachCard').classList.remove('coach-danger', 'coach-win');
                 if (game.turn() === 'b' && game.history().length >= 1) {{
                     game.undo();
                 }} else if (game.history().length >= 2) {{
@@ -615,7 +673,7 @@ if modo.startswith("🎮"):
                 board.start();
                 limpiarResaltado();
                 document.getElementById('btnCorregir').style.display = 'none';
-                document.getElementById('coachCard').classList.remove('coach-danger');
+                document.getElementById('coachCard').classList.remove('coach-danger', 'coach-win');
                 document.getElementById('pgnBox').style.display = 'none';
                 document.getElementById('statusMsg').innerHTML = "🔄 ¡Partida nueva! Toca cualquier pieza blanca para ver a dónde puede ir.";
             }}
@@ -680,14 +738,15 @@ else:
         texto_explicacion = actual["explicacion"]
         if gemini_key and paso > 0:
             exp_ia = explicar_con_gemini(
-                gemini_key, actual["fen_previo"], actual["jugada_txt"], actual["mejor_txt"], actual["titulo"]
+                gemini_key, actual["fen_previo"], actual["es_jugador"], actual["jugada_txt"], actual["mejor_txt"], actual["titulo"]
             )
             if exp_ia:
                 texto_explicacion = exp_ia
 
+        icono_turno = "🧑‍🏫" if actual.get("es_jugador", True) else "🤖"
         st.markdown(f"""
         <div class="coach-box" style="border-left-color: {actual['color_badge']};">
-            <div class="coach-avatar">🧑‍🏫</div>
+            <div class="coach-avatar">{icono_turno}</div>
             <div class="coach-text">
                 <span class="badge" style="background-color: {actual['color_badge']}; color: #fff;">
                     {actual['titulo']}
