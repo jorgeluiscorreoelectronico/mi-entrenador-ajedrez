@@ -77,6 +77,8 @@ def obtener_ruta_stockfish():
 
 def analizar_partida(pgn_texto):
     juego = chess.pgn.read_game(io.StringIO(pgn_texto))
+    if not juego:
+        return None, None
     tablero = juego.board()
     ruta_sf = obtener_ruta_stockfish()
     
@@ -86,7 +88,7 @@ def analizar_partida(pgn_texto):
         "mejor_mov": None,
         "titulo": "Inicio de la partida",
         "color_badge": "#81b64c",
-        "explicacion": "¡Hola! Soy tu entrenador. Toca 'Siguiente' para repasar tu partida jugada por jugada.",
+        "explicacion": "¡Hola! Soy tu entrenador. Toca 'Sig. ➡️' abajo del tablero para repasar tu partida jugada por jugada.",
         "eval_blancas": 0.2
     }]
     
@@ -94,7 +96,6 @@ def analizar_partida(pgn_texto):
         info_prev = motor.analyse(tablero, chess.engine.Limit(depth=12))
         
         for num, mov in enumerate(juego.mainline_moves()):
-            turno_blancas = tablero.turn == chess.WHITE
             mejor_mov_prev = info_prev.get("pv", [mov])[0]
             
             score_antes = info_prev["score"].pov(tablero.turn).score(mate_score=10000) / 100.0
@@ -104,18 +105,15 @@ def analizar_partida(pgn_texto):
             tablero.push(mov)
             info_desp = motor.analyse(tablero, chess.engine.Limit(depth=12))
             
-            # Evaluación desde el punto de vista de quien acaba de mover
             score_desp = - (info_desp["score"].pov(tablero.turn).score(mate_score=10000) / 100.0)
             eval_blancas = info_desp["score"].white().score(mate_score=10000) / 100.0
             perdida = max(0.0, score_antes - score_desp)
             
-            # Respuesta que amenaza el rival ahora
             amenaza_rival = ""
             if "pv" in info_desp and len(info_desp["pv"]) > 0:
                 mov_rival = info_desp["pv"][0]
                 amenaza_rival = jugada_en_espanol(tablero, mov_rival)
 
-            # Clasificación y explicación del Entrenador en Español
             if num < 6 and perdida < 0.35:
                 titulo, color = "📖 Jugada de Libro", "#a88865"
                 explicacion = f"Jugaste {texto_jugada_hecha}. Es una jugada teórica de apertura para desarrollar tus piezas."
@@ -131,7 +129,7 @@ def analizar_partida(pgn_texto):
                 explicacion = f"Jugaste {texto_jugada_hecha}, una buena decisión que mantiene sólida tu posición. Otra opción era {texto_mejor_jugada}."
             elif perdida < 0.9:
                 titulo, color = "?! Imprecisión", "#f7c631"
-                explicacion = f"Jugaste {texto_jugada_hecha}, que es un poco imprecisa porque permite al rival responder con {amenaza_rival}. Era mejor {texto_mejor_jugada}."
+                explicacion = f"Jugaste {texto_jugada_hecha}, que es imprecisa porque permite al rival responder con {amenaza_rival}. Era mejor {texto_mejor_jugada}."
             elif perdida < 2.0:
                 titulo, color = "? Error", "#e6912c"
                 explicacion = f"Cuidado, jugar {texto_jugada_hecha} es un error que empeora tu posición, ya que tu oponente ahora tiene {amenaza_rival}. Debías jugar {texto_mejor_jugada}."
@@ -156,30 +154,69 @@ def analizar_partida(pgn_texto):
 st.title("♟️ Revisión de Partida")
 
 with st.expander("🔍 Cargar partida de Chess.com", expanded=("jugadas" not in st.session_state)):
-    usuario = st.text_input("Tu usuario de Chess.com:", placeholder="Ej: Hikaru")
-    if st.button("Buscar mis últimas partidas", use_container_width=True) and usuario:
-        headers = {"User-Agent": "MiEntrenadorPython/1.0"}
-        r = requests.get(f"https://api.chess.com/pub/player/{usuario.lower().strip()}/games/archives", headers=headers)
-        if r.status_code == 200 and r.json().get("archives"):
-            ultimo_mes = r.json()["archives"][-1]
-            partidas = requests.get(ultimo_mes, headers=headers).json().get("games", [])[-10:]
-            partidas.reverse()
-            st.session_state["lista_partidas"] = partidas
-        else:
-            st.error("No se encontró el usuario o no tiene partidas públicas.")
+    tab1, tab2 = st.tabs(["Por Usuario de Chess.com", "Pegar PGN Manual"])
+    
+    with tab1:
+        usuario = st.text_input("Tu usuario de Chess.com:", placeholder="Ej: Hikaru")
+        if st.button("Buscar mis últimas partidas", use_container_width=True):
+            if not usuario.strip():
+                st.warning("Por favor escribe un nombre de usuario.")
+            else:
+                headers = {"User-Agent": "MiEntrenadorAjedrezApp/1.0 (contacto: usuario@gmail.com)"}
+                url_archivos = f"https://api.chess.com/pub/player/{usuario.lower().strip()}/games/archives"
+                r = requests.get(url_archivos, headers=headers)
+                
+                if r.status_code == 404:
+                    st.error(f"El usuario '{usuario}' no existe en Chess.com. Revisa si está bien escrito.")
+                elif r.status_code == 200:
+                    archivos = r.json().get("archives", [])
+                    partidas_encontradas = []
+                    # Buscar desde el mes más reciente hacia atrás
+                    for mes_url in reversed(archivos[-3:]):
+                        resp_mes = requests.get(mes_url, headers=headers)
+                        if resp_mes.status_code == 200:
+                            juegos_mes = [g for g in resp_mes.json().get("games", []) if "pgn" in g]
+                            juegos_mes.reverse()
+                            partidas_encontradas.extend(juegos_mes)
+                        if len(partidas_encontradas) >= 15:
+                            break
+                    
+                    if partidas_encontradas:
+                        st.session_state["lista_partidas"] = partidas_encontradas[:15]
+                        st.success(f"¡Se encontraron {len(st.session_state['lista_partidas'])} partidas recientes!")
+                    else:
+                        st.warning("Se encontró tu cuenta, pero no tienes partidas recientes guardadas.")
+                else:
+                    st.error("Hubo un problema al conectar con Chess.com. Intenta de nuevo.")
 
-    if "lista_partidas" in st.session_state:
-        opciones = [
-            f"⚪ {p['white']['username']} vs ⚫ {p['black']['username']}"
-            for p in st.session_state["lista_partidas"]
-        ]
-        seleccion = st.selectbox("Elige la partida:", range(len(opciones)), format_func=lambda i: opciones[i])
-        if st.button("🚀 Analizar con el Entrenador", type="primary", use_container_width=True):
+        if st.session_state.get("lista_partidas"):
+            opciones = [
+                f"⚪ {p['white']['username']} ({p['white'].get('rating','?')}) vs ⚫ {p['black']['username']} ({p['black'].get('rating','?')})"
+                for p in st.session_state["lista_partidas"]
+            ]
+            seleccion = st.selectbox("Elige la partida:", range(len(opciones)), format_func=lambda i: opciones[i])
+            if st.button("🚀 Analizar con el Entrenador", type="primary", use_container_width=True):
+                with st.spinner("El Entrenador está analizando tus jugadas con Stockfish..."):
+                    pgn = st.session_state["lista_partidas"][seleccion]["pgn"]
+                    jugadas, cabeceras = analizar_partida(pgn)
+                    if jugadas:
+                        st.session_state["jugadas"] = jugadas
+                        st.session_state["headers"] = cabeceras
+                        st.session_state["paso"] = 0
+                        st.rerun()
+
+    with tab2:
+        pgn_manual = st.text_area("Pega aquí el PGN de tu partida:", height=120, placeholder="1. e4 e5 2. Nf3 Nc6...")
+        if st.button("🚀 Analizar PGN pegado", type="primary", use_container_width=True) and pgn_manual.strip():
             with st.spinner("El Entrenador está analizando tus jugadas con Stockfish..."):
-                pgn = st.session_state["lista_partidas"][seleccion]["pgn"]
-                st.session_state["jugadas"], st.session_state["headers"] = analizar_partida(pgn)
-                st.session_state["paso"] = 0
-                st.rerun()
+                jugadas, cabeceras = analizar_partida(pgn_manual)
+                if jugadas:
+                    st.session_state["jugadas"] = jugadas
+                    st.session_state["headers"] = cabeceras
+                    st.session_state["paso"] = 0
+                    st.rerun()
+                else:
+                    st.error("El texto pegado no parece un PGN válido.")
 
 # --- MOSTRAR TABLERO Y ENTRENADOR ---
 if "jugadas" in st.session_state:
@@ -187,7 +224,6 @@ if "jugadas" in st.session_state:
     total = len(st.session_state["jugadas"]) - 1
     actual = st.session_state["jugadas"][paso]
 
-    # 1. Caja del Entrenador estilo Chess.com
     st.markdown(f"""
     <div class="coach-box" style="border-left-color: {actual['color_badge']};">
         <div class="coach-avatar">🧑‍🏫</div>
@@ -200,7 +236,6 @@ if "jugadas" in st.session_state:
     </div>
     """, unsafe_allow_html=True)
 
-    # 2. Voz del Narrador en Español
     activar_voz = st.toggle("🔊 Narrador con voz en español", value=True)
     if activar_voz:
         tts = gTTS(text=f"{actual['titulo']}. {actual['explicacion']}", lang="es")
@@ -208,7 +243,6 @@ if "jugadas" in st.session_state:
         tts.write_to_fp(audio_bytes)
         st.audio(audio_bytes.getvalue(), format="audio/mp3", autoplay=True)
 
-    # 3. Tablero verde estilo Chess.com + Flecha de mejor jugada
     tablero_actual = chess.Board(actual["fen"])
     flechas = []
     if actual["mejor_mov"]:
@@ -229,7 +263,6 @@ if "jugadas" in st.session_state:
     b64 = base64.b64encode(svg_tablero.encode("utf-8")).decode("utf-8")
     st.markdown(f'<div style="text-align:center;"><img src="data:image/svg+xml;base64,{b64}" style="width:100%; max-width:380px; border-radius:8px;"/></div>', unsafe_allow_html=True)
 
-    # 4. Botones grandes para celular
     st.write(f"**Jugada {paso} de {total}**")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
