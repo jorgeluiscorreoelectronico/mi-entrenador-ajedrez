@@ -10,6 +10,7 @@ import shutil
 import base64
 import asyncio
 import edge_tts
+from gtts import gTTS
 
 st.set_page_config(page_title="Mi Ajedrez & Entrenador", page_icon="♟️", layout="centered")
 
@@ -43,21 +44,30 @@ st.markdown("""
 
 # --- GENERADOR DE VOZ HUMANA NEURONAL (MICROSOFT EDGE TTS) ---
 VOCES_HUMANAS = {
+    "🎙️ Lorenzo (Voz Humana - Chile)": "es-CL-LorenzoNeural",
     "🎙️ Álvaro (Voz Humana - España)": "es-ES-AlvaroNeural",
-    "🎙️ Dalia (Voz Humana - México)": "es-MX-DaliaNeural",
-    "🎙️ Lorenzo (Voz Humana - Chile)": "es-CL-LorenzoNeural"
+    "🎙️ Dalia (Voz Humana - México)": "es-MX-DaliaNeural"
 }
 
 @st.cache_data(show_spinner=False)
 def generar_audio_humano(texto, voz_id):
-    async def _generar():
-        comunicador = edge_tts.Communicate(texto, voz_id, rate="+12%")
-         datos_audio = b""
-        async for chunk in comunicador.stream():
-            if chunk["type"] == "audio":
-                datos_audio += chunk["data"]
-        return datos_audio
-    return asyncio.run(_generar())
+    try:
+        async def _generar():
+            comunicador = edge_tts.Communicate(texto, voz_id, rate="+12%")
+            datos_audio = b""
+            async for chunk in comunicador.stream():
+                if chunk["type"] == "audio":
+                    datos_audio += chunk["data"]
+            return datos_audio
+        audio = asyncio.run(_generar())
+        if audio:
+            return audio
+    except Exception:
+        pass
+    tts = gTTS(text=texto, lang="es")
+    buf = io.BytesIO()
+    tts.write_to_fp(buf)
+    return buf.getvalue()
 
 # --- IA GRATUITA DE GOOGLE GEMINI (OPCIONAL) ---
 def explicar_con_gemini(api_key, fen, jugada_hecha, mejor_jugada, clasificacion):
@@ -280,11 +290,9 @@ if modo.startswith("🎮"):
             .white-1e1d7 {{ background-color: #ebecd0 !important; color: #739552 !important; }}
             .black-3c85d {{ background-color: #739552 !important; color: #ebecd0 !important; }}
             .highlight-sq {{ box-shadow: inset 0 0 3px 3px #f5f682 !important; background-color: #f5f682 !important; }}
-            /* Puntitos estilo Chess.com para casillas vacías */
             .dot-sq {{
                 background-image: radial-gradient(rgba(20, 20, 20, 0.38) 19%, rgba(0, 0, 0, 0) 22%) !important;
             }}
-            /* Anillo estilo Chess.com para piezas que puedes comer */
             .capture-sq {{
                 box-shadow: inset 0 0 0 5px rgba(202, 52, 49, 0.65) !important;
             }}
@@ -376,8 +384,7 @@ if modo.startswith("🎮"):
                 }}
             }}
 
-            // Verifica si la jugada del usuario regala la Dama o una pieza valiosa gratis
-            function verificarPeligroPieza(ultimoMovJugador) {{
+            function verificarPeligroPieza() {{
                 if (!protector) return null;
                 var respuestasRival = game.moves({{ verbose: true }});
                 var peorPerdida = 0;
@@ -387,10 +394,8 @@ if modo.startswith("🎮"):
                     var r = respuestasRival[i];
                     if (r.captured) {{
                         var valorCapturado = valores[r.captured] || 0;
-                        // Si nos capturan la Dama (900), Torre (500) o pieza menor en la casilla donde acabamos de mover o dejamos colgada
                         if (valorCapturado >= 300) {{
                             game.move(r);
-                            // Ver si podemos recapturar en esa misma casilla
                             var misRecapturas = game.moves({{ verbose: true }}).filter(function(m) {{ return m.to === r.to; }});
                             game.undo();
                             var gananciaNetaRival = misRecapturas.length === 0 ? valorCapturado : (valorCapturado - (valores[r.piece] || 0));
@@ -494,8 +499,7 @@ if modo.startswith("🎮"):
                 board.position(game.fen());
                 playSound(move);
 
-                // Protector de Dama y Piezas en vivo
-                var peligro = verificarPeligroPieza(move);
+                var peligro = verificarPeligroPieza();
                 if (peligro) {{
                     try {{ sndIllegal.play(); }} catch(e) {{}}
                     document.getElementById('coachCard').classList.add('coach-danger');
@@ -504,7 +508,7 @@ if modo.startswith("🎮"):
                     document.getElementById('statusMsg').innerHTML =
                         "🚨 <b>¡CUIDADO!</b> Con esa jugada dejas tu <b>" + nombrePieza(peligro.captured) +
                         " en " + peligro.to + "</b> sin defensa (el rival te la puede comer con su " +
-                        nombrePieza(peligro.piece) + ").<br>Toca el botón naranja abajo para corregirla, o espera si quieres seguir.";
+                        nombrePieza(peligro.piece) + ").<br>Toca el botón naranja abajo para corregirla.";
                     return;
                 }}
 
@@ -558,7 +562,6 @@ if modo.startswith("🎮"):
             }};
             board = Chessboard('myBoard', config);
 
-            // Tocar casilla para ver puntitos y tocar segundo punto para mover
             $('#myBoard').on('click', '.square-55d63', function() {{
                 if (game.game_over() || game.turn() !== 'w') return;
                 var sq = $(this).attr('data-square');
@@ -725,4 +728,3 @@ else:
             if st.button("⏭️", use_container_width=True) and paso < total:
                 st.session_state["paso"] = total
                 st.rerun()
-                
